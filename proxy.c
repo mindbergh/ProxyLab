@@ -1,4 +1,11 @@
+/*
+ * proxy.c - A proxy server for CMU 15-213 proxy lab
+ * Author: Ming Fahg
+ * Email:  mingf@andrew.cmu.edu
+ */
+
 #include <stdio.h>
+#include <csapp.h>
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
