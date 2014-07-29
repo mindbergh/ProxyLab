@@ -7,8 +7,10 @@
 #include <stdio.h>
 #include "csapp.h"
 #include "cache.h"
+#include "mio.h"
 
-#define CACHE_ENABLE   0
+#define CACHE_ENABLE   1
+#define VERBOSE        0
 
 /* You won't lose style points for including these long lines in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
@@ -25,12 +27,7 @@ void proxy(int fd);
 int parse_uri(char *uri, char *host, int *port, char *path);
 void clienterror(int fd, char *cause, char *errnum, 
 		 char *shortmsg, char *longmsg);
-void read_requesthdrs(rio_t *rp);
-
-void sigpipe_handler(int sig) {
-    printf("SIGPIPE ignored!\n");
-    return;
-}
+void read_requesthdrs(mio_t *rp);
 
 int main(int argc, char **argv) {
     int listenfd, *connfdp, port;
@@ -45,7 +42,7 @@ int main(int argc, char **argv) {
     port = atoi(argv[1]);
 
 
-    Signal(SIGPIPE, sigpipe_handler);
+    Signal(SIGPIPE, SIG_IGN);
     cache_init();
 
     listenfd = Open_listenfd(port);
@@ -63,11 +60,12 @@ int main(int argc, char **argv) {
 void *thread(void *vargp) 
 {  
     int connfd = *((int *)vargp);
-    printf("----------->>New thread created!<<------------\n");
+    printf("New thread [%p] created!>>>>>>>>>>>>>>>>>>\n", vargp);
     Pthread_detach(pthread_self()); 
     Free(vargp);
     proxy(connfd);
     Close(connfd);
+    printf("Thread [%p] is closing!<<<<<<<<<<<<<<<<<<<<<<<<\n", vargp);
     return NULL;
 }
 /* $end echoservertmain */
@@ -85,22 +83,24 @@ void proxy(int fd)
     int found = 0;
     size_t n;
     size_t sum = 0;
-    rio_t rio_user, rio_internet;
+    mio_t mio_user, mio_internet;
     cnode_t * node;
 
 
   
     /* Read request line and headers */
-    Rio_readinitb(&rio_user, fd);
-    Rio_readlineb(&rio_user, buf, MAXLINE);
+    Mio_readinitb(&mio_user, fd);
+    Mio_readlineb(&mio_user, buf, MAXLINE);
+
     sscanf(buf, "%s %s %s", method, uri, version);
+    printf("%s\n", buf);
     if (strcasecmp(method, "GET")) { 
         clienterror(fd, method, "501", "Not Implemented",
                 "Ming does not implement this method");
         return;
     }
 
-    read_requesthdrs(&rio_user);
+    read_requesthdrs(&mio_user);
 
     /* Parse URI from GET request */
     if (!parse_uri(uri, host, &port, path)) {
@@ -109,12 +109,13 @@ void proxy(int fd)
 		return;
     }
 
+    printf("uri = \"%s\"\n", uri);
+	if (VERBOSE) {
 
-	
-	printf("uri = \"%s\"\n", uri);
-    printf("host = \"%s\", ", host);
-    printf("port = \"%d\", ", port);
-    printf("path = \"%s\"\n", path);
+        printf("host = \"%s\", ", host);
+        printf("port = \"%d\", ", port);
+        printf("path = \"%s\"\n", path);
+    }
 
     if (CACHE_ENABLE) {
         /* Critcal readcnt section begin */
@@ -130,7 +131,7 @@ void proxy(int fd)
             printf("Cache hit!\n");
             delete(node);
             enqueue(node);
-            Rio_writen(fd, node->payload, node->size);
+            Mio_writen(fd, node->payload, node->size);
             printf("Senting respond %u bytes from cache\n", (unsigned int)node->size);
             //fprintf(stdout, node->payload);
             found = 1;
@@ -156,27 +157,27 @@ void proxy(int fd)
     }
 
     fd_internet = Open_clientfd_r(host, port);
-	Rio_readinitb(&rio_internet, fd_internet);
+	Mio_readinitb(&mio_internet, fd_internet);
 
 	/* Forward request */
     sprintf(buf_internet, "GET %s HTTP/1.0\r\n", path);
-    Rio_writen(fd_internet, buf_internet, strlen(buf_internet));
+    Mio_writen(fd_internet, buf_internet, strlen(buf_internet));
 	sprintf(buf_internet, "Host: %s\r\n", host);
-    Rio_writen(fd_internet, buf_internet, strlen(buf_internet));
-    Rio_writen(fd_internet, user_agent_hdr, strlen(user_agent_hdr));
-    Rio_writen(fd_internet, accept_hdr, strlen(accept_hdr));
-    Rio_writen(fd_internet, accept_encoding_hdr, strlen(accept_encoding_hdr));
-    Rio_writen(fd_internet, connection_hdr, strlen(connection_hdr));
-    Rio_writen(fd_internet, pxy_connection_hdr, strlen(pxy_connection_hdr));
+    Mio_writen(fd_internet, buf_internet, strlen(buf_internet));
+    Mio_writen(fd_internet, user_agent_hdr, strlen(user_agent_hdr));
+    Mio_writen(fd_internet, accept_hdr, strlen(accept_hdr));
+    Mio_writen(fd_internet, accept_encoding_hdr, strlen(accept_encoding_hdr));
+    Mio_writen(fd_internet, connection_hdr, strlen(connection_hdr));
+    Mio_writen(fd_internet, pxy_connection_hdr, strlen(pxy_connection_hdr));
 
 	/* Forward respond */
 
     strcpy(payload, "");
-    while ((n = Rio_readlineb(&rio_internet, buf_internet, MAXLINE)) != 0) {
+    while ((n = Mio_readlineb(&mio_internet, buf_internet, MAXLINE)) != 0) {
     	sum += n;
         if (sum <= MAX_OBJECT_SIZE)
             strcat(payload, buf_internet);
-		Rio_writen(fd, buf_internet, n);
+		Mio_writen(fd, buf_internet, n);
 	}
 
     printf("Forward respond %d bytes\n", sum);
@@ -298,14 +299,16 @@ int parse_uri(char *uri, char *host, int *port, char *path)
  * read_requesthdrs - read and parse HTTP request headers
  */
 /* $begin read_requesthdrs */
-void read_requesthdrs(rio_t *rp) {
+void read_requesthdrs(mio_t *rp) {
     char buf[MAXLINE];
 
-    Rio_readlineb(rp, buf, MAXLINE);
-    printf("%s", buf);
-    while(strcmp(buf, "\r\n")) {
-        Rio_readlineb(rp, buf, MAXLINE);
+    Mio_readlineb(rp, buf, MAXLINE);
+    if (VERBOSE)
         printf("%s", buf);
+    while(strcmp(buf, "\r\n")) {
+        Mio_readlineb(rp, buf, MAXLINE);
+        if (VERBOSE)
+            printf("%s", buf);
     }
     return;
 }
@@ -328,11 +331,11 @@ void clienterror(int fd, char *cause, char *errnum,
 
     /* Print the HTTP response */
     sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
-    Rio_writen(fd, buf, strlen(buf));
+    Mio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Content-type: text/html\r\n");
-    Rio_writen(fd, buf, strlen(buf));
+    Mio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
-    Rio_writen(fd, buf, strlen(buf));
-    Rio_writen(fd, body, strlen(body));
+    Mio_writen(fd, buf, strlen(buf));
+    Mio_writen(fd, body, strlen(body));
 }
 /* $end clienterror */
