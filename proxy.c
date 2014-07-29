@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include "csapp.h"
+#include "cache.h"
 
 
 
@@ -45,6 +46,7 @@ int main(int argc, char **argv) {
 
 
     Signal(SIGPIPE, sigpipe_handler);
+    cache_init();
 
     listenfd = Open_listenfd(port);
     while (1) {
@@ -77,12 +79,14 @@ void *thread(void *vargp)
 void proxy(int fd) 
 {
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
-    char buf_internet[MAXLINE];
+    char buf_internet[MAXLINE], payload[MAXLINE];
     char host[MAXLINE], path[MAXLINE];
     int port, fd_internet;
+    int found = 0;
     size_t n;
     size_t sum = 0;
     rio_t rio_user, rio_internet;
+    cnode_t * node;
 
 
   
@@ -104,12 +108,51 @@ void proxy(int fd)
 		    "Ming couldn't parse the request");
 		return;
     }
+
+
 	
 	printf("uri = \"%s\"\n", uri);
     printf("host = \"%s\", ", host);
     printf("port = \"%d\", ", port);
     printf("path = \"%s\"\n", path);
 
+
+    /* Critcal readcnt section begin */
+    P(&mutex);
+    readcnt++;
+    if (readcnt == 1)  // First in
+        P(&w);
+    V(&mutex);
+    /* Critcal readcnt section end */
+
+    /* Critcal reading section begin */
+    if ((node = match(host, port, path)) != NULL) {
+        printf("Cache hit!\n");
+        delete(node);
+        enqueue(node);
+        Rio_writen(fd, node->payload, node->size);
+        printf("Senting respond %u bytes from cache\n", (unsigned int)node->size);
+        //fprintf(stdout, node->payload);
+        found = 1;
+    }
+    /* Critcal reading section end */  
+
+    /* Critcal readcnt section begin */    
+    P(&mutex);
+    readcnt--;
+    if (readcnt == 0)
+        V(&w);
+    V(&mutex);
+    /* Critcal readcnt section end */
+
+    if (found == 1) {
+        printf("Proxy is exiting\n\n");        
+        return;
+    }
+
+
+
+    printf("Cache miss!\n");   
     fd_internet = Open_clientfd_r(host, port);
 	Rio_readinitb(&rio_internet, fd_internet);
 
@@ -125,12 +168,37 @@ void proxy(int fd)
     Rio_writen(fd_internet, pxy_connection_hdr, strlen(pxy_connection_hdr));
 
 	/* Forward respond */
+
+    strcpy(payload, "");
     while ((n = Rio_readlineb(&rio_internet, buf_internet, MAXLINE)) != 0) {
     	sum += n;
+        if (sum <= MAX_OBJECT_SIZE)
+            strcat(payload, buf_internet);
 		Rio_writen(fd, buf_internet, n);
 	}
-    printf("Recieve respond %d bytes\n", sum);
-    printf("Proxy is exiting\n");
+
+    printf("Forward respond %d bytes\n", sum);
+
+
+
+    if (sum <= MAX_OBJECT_SIZE) {
+        node = new(host, port, path, payload, sum);
+
+        /* Critcal write section begin */
+
+        P(&w);
+        while (cache_load + sum > MAX_CACHE_SIZE) {
+            printf("Cache evicted");
+            dequeue();
+        }
+        enqueue(node);
+        printf("The following payload cached:\n");
+        //fprintf(stdout, payload);
+        V(&w);
+        /* Critcal write section end */
+    }
+    
+    printf("Proxy is exiting\n\n");
 }
 /* $end proxyd */
 
@@ -245,8 +313,7 @@ void read_requesthdrs(rio_t *rp) {
  */
 /* $begin clienterror */
 void clienterror(int fd, char *cause, char *errnum, 
-		 char *shortmsg, char *longmsg) 
-{
+		 char *shortmsg, char *longmsg) {
     char buf[MAXLINE], body[MAXBUF];
 
     /* Build the HTTP response body */
