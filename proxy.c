@@ -8,7 +8,7 @@
 #include "csapp.h"
 #include "cache.h"
 
-
+#define CACHE_ENABLE   0
 
 /* You won't lose style points for including these long lines in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
 void *thread(void *vargp) 
 {  
     int connfd = *((int *)vargp);
-    printf("New thread created!\n");
+    printf("----------->>New thread created!<<------------\n");
     Pthread_detach(pthread_self()); 
     Free(vargp);
     proxy(connfd);
@@ -116,43 +116,45 @@ void proxy(int fd)
     printf("port = \"%d\", ", port);
     printf("path = \"%s\"\n", path);
 
+    if (CACHE_ENABLE) {
+        /* Critcal readcnt section begin */
+        P(&mutex);
+        readcnt++;
+        if (readcnt == 1)  // First in
+            P(&w);
+        V(&mutex);
+        /* Critcal readcnt section end */
 
-    /* Critcal readcnt section begin */
-    P(&mutex);
-    readcnt++;
-    if (readcnt == 1)  // First in
-        P(&w);
-    V(&mutex);
-    /* Critcal readcnt section end */
+        /* Critcal reading section begin */
+        if ((node = match(host, port, path)) != NULL) {
+            printf("Cache hit!\n");
+            delete(node);
+            enqueue(node);
+            Rio_writen(fd, node->payload, node->size);
+            printf("Senting respond %u bytes from cache\n", (unsigned int)node->size);
+            //fprintf(stdout, node->payload);
+            found = 1;
+        }
+        /* Critcal reading section end */  
 
-    /* Critcal reading section begin */
-    if ((node = match(host, port, path)) != NULL) {
-        printf("Cache hit!\n");
-        delete(node);
-        enqueue(node);
-        Rio_writen(fd, node->payload, node->size);
-        printf("Senting respond %u bytes from cache\n", (unsigned int)node->size);
-        //fprintf(stdout, node->payload);
-        found = 1;
+        /* Critcal readcnt section begin */    
+        P(&mutex);
+        readcnt--;
+        if (readcnt == 0)
+            V(&w);
+        V(&mutex);
+        /* Critcal readcnt section end */
+
+        if (found == 1) {
+            printf("Proxy is exiting\n\n");        
+            return;
+        }
+
+
+
+        printf("Cache miss!\n");
     }
-    /* Critcal reading section end */  
 
-    /* Critcal readcnt section begin */    
-    P(&mutex);
-    readcnt--;
-    if (readcnt == 0)
-        V(&w);
-    V(&mutex);
-    /* Critcal readcnt section end */
-
-    if (found == 1) {
-        printf("Proxy is exiting\n\n");        
-        return;
-    }
-
-
-
-    printf("Cache miss!\n");   
     fd_internet = Open_clientfd_r(host, port);
 	Rio_readinitb(&rio_internet, fd_internet);
 
@@ -180,22 +182,23 @@ void proxy(int fd)
     printf("Forward respond %d bytes\n", sum);
 
 
+    if (CACHE_ENABLE) {
+        if (sum <= MAX_OBJECT_SIZE) {
+            node = new(host, port, path, payload, sum);
 
-    if (sum <= MAX_OBJECT_SIZE) {
-        node = new(host, port, path, payload, sum);
+            /* Critcal write section begin */
 
-        /* Critcal write section begin */
-
-        P(&w);
-        while (cache_load + sum > MAX_CACHE_SIZE) {
-            printf("Cache evicted");
-            dequeue();
+            P(&w);
+            while (cache_load + sum > MAX_CACHE_SIZE) {
+                printf("Cache evicted");
+                dequeue();
+            }
+            enqueue(node);
+            printf("The object has been cached\n");
+            //fprintf(stdout, payload);
+            V(&w);
+            /* Critcal write section end */
         }
-        enqueue(node);
-        printf("The following payload cached:\n");
-        //fprintf(stdout, payload);
-        V(&w);
-        /* Critcal write section end */
     }
     
     printf("Proxy is exiting\n\n");
