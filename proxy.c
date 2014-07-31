@@ -29,6 +29,11 @@ void clienterror(int fd, char *cause, char *errnum,
 		 char *shortmsg, char *longmsg);
 void read_requesthdrs(mio_t *rp);
 
+void sigpipe_handler(int sig) {
+    printf("SIGPIPE handled\n");
+    return;
+}
+
 int main(int argc, char **argv) {
     int listenfd, *connfdp, port;
     socklen_t clientlen = sizeof(struct sockaddr_in);
@@ -42,7 +47,7 @@ int main(int argc, char **argv) {
     port = atoi(argv[1]);
 
 
-    Signal(SIGPIPE, SIG_IGN);
+    Signal(SIGPIPE, sigpipe_handler);
     cache_init();
 
     listenfd = Open_listenfd(port);
@@ -60,12 +65,13 @@ int main(int argc, char **argv) {
 void *thread(void *vargp) 
 {  
     int connfd = *((int *)vargp);
-    printf("New thread [%p] created!>>>>>>>>>>>>>>>>>>\n", vargp);
+    printf("New thread created! fd = %d >>>>>>>>>>>>>>>>>>\n", connfd);
     Pthread_detach(pthread_self()); 
     Free(vargp);
+    Signal(SIGPIPE, sigpipe_handler);
     proxy(connfd);
     Close(connfd);
-    printf("Thread [%p] is closing!<<<<<<<<<<<<<<<<<<<<<<<<\n", vargp);
+    printf("Thread is closing! fd = %d <<<<<<<<<<<<<<<<<<<<<<<<\n", connfd);
     return NULL;
 }
 /* $end echoservertmain */
@@ -77,7 +83,7 @@ void *thread(void *vargp)
 void proxy(int fd) 
 {
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
-    char buf_internet[MAXLINE], payload[MAXLINE];
+    char buf_internet[MAXLINE], payload[MAX_OBJECT_SIZE];
     char host[MAXLINE], path[MAXLINE];
     int port, fd_internet;
     int found = 0;
@@ -92,8 +98,12 @@ void proxy(int fd)
     Mio_readinitb(&mio_user, fd);
     Mio_readlineb(&mio_user, buf, MAXLINE);
 
+    printf("Request: %s\n", buf);
+
+    if (strcmp(buf, "") == 0)
+        return;
+
     sscanf(buf, "%s %s %s", method, uri, version);
-    printf("%s\n", buf);
     if (strcasecmp(method, "GET")) { 
         clienterror(fd, method, "501", "Not Implemented",
                 "Ming does not implement this method");
@@ -127,6 +137,7 @@ void proxy(int fd)
         /* Critcal readcnt section end */
 
         /* Critcal reading section begin */
+        Cache_check();
         if ((node = match(host, port, path)) != NULL) {
             printf("Cache hit!\n");
             delete(node);
@@ -135,7 +146,7 @@ void proxy(int fd)
             printf("Senting respond %u bytes from cache\n", (unsigned int)node->size);
             //fprintf(stdout, node->payload);
             found = 1;
-        }
+        }        
         /* Critcal reading section end */  
 
         /* Critcal readcnt section begin */    
@@ -147,11 +158,9 @@ void proxy(int fd)
         /* Critcal readcnt section end */
 
         if (found == 1) {
-            printf("Proxy is exiting\n\n");        
+            printf("Proxy is exiting\n\n");
             return;
         }
-
-
 
         printf("Cache miss!\n");
     }
@@ -174,7 +183,9 @@ void proxy(int fd)
 
     strcpy(payload, "");
     while ((n = Mio_readlineb(&mio_internet, buf_internet, MAXLINE)) != 0) {
-    	sum += n;
+
+        //printf("Fd = %d, Sum = %d, n = %d\n", mio_internet.mio_fd, sum, n);
+        sum += n;
         if (sum <= MAX_OBJECT_SIZE)
             strcat(payload, buf_internet);
 		Mio_writen(fd, buf_internet, n);
@@ -188,15 +199,18 @@ void proxy(int fd)
             node = new(host, port, path, payload, sum);
 
             /* Critcal write section begin */
-
             P(&w);
+            Cache_check();            
             while (cache_load + sum > MAX_CACHE_SIZE) {
-                printf("Cache evicted");
+                printf("!!!!!!!!!!!!!!!!!Cache evicted!!!!!!!!!!!!!!!!!!\n");
                 dequeue();
             }
             enqueue(node);
             printf("The object has been cached\n");
+            printf("Current cache size is %d \n", cache_count);            
+            printf("Current cache load is %d bytes\n", cache_load);
             //fprintf(stdout, payload);
+            Cache_check();
             V(&w);
             /* Critcal write section end */
         }

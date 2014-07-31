@@ -29,6 +29,7 @@ typedef struct cnode {
 
 extern cnode_t *tail;
 extern cnode_t *head;
+extern int cache_count;
 extern volatile size_t cache_load;
 extern volatile int readcnt;            // Initially 0
 extern sem_t mutex, w;         // Both initially 1;
@@ -41,6 +42,9 @@ void enqueue(cnode_t *node);
 void dequeue();
 cnode_t * new(char *host, int port, char *path, char *payload, size_t size);
 cnode_t * match(char *host, int port, char *path);
+int cache_check();
+void Cache_check();
+
 
 #endif
 

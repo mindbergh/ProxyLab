@@ -203,7 +203,9 @@ ssize_t Mio_readlineb(mio_t *rp, void *usrbuf, size_t maxlen)
 {
     ssize_t rc;
 
-    if ((rc = mio_readlineb(rp, usrbuf, maxlen)) < 0)
-	unix_error("Mio_readlineb error");
+    if ((rc = mio_readlineb(rp, usrbuf, maxlen)) < 0) {
+    	printf("Fd = %d\n", rp->mio_fd);
+		unix_error("Mio_readlineb error");
+	}
     return rc;
 } 
