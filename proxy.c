@@ -143,7 +143,8 @@ void proxy(int fd)
             delete(node);
             enqueue(node);
             Mio_writen(fd, node->payload, node->size);
-            printf("Senting respond %u bytes from cache\n", (unsigned int)node->size);
+            printf("Senting respond %u bytes from cache\n",
+                   (unsigned int)node->size);
             //fprintf(stdout, node->payload);
             found = 1;
         }        
